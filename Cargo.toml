@@ -1,0 +1,12 @@
+[package]
+name = "harmoniser"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+apodize = "1.0.0"
+hound = "3.5.1"
+interp = "2.0.1"
+interpolation = "0.3.0"
+itertools = "0.13.0"
+rustfft = "6.2.0"
