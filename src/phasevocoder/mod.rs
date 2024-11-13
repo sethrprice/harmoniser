@@ -1,6 +1,6 @@
 use crate::wave::{ChannelType, StereoWave, Wave, WaveForm, WaveMetaData};
-use interp::{interp_slice, InterpMode};
 use phase_vocoder_helpers::split_stereo_wave;
+use rust_interpolation::monointerp;
 use rustfft::{algorithm::Radix4, num_complex::Complex, Fft, FftDirection};
 use std::f32::consts::PI;
 
@@ -108,8 +108,6 @@ impl PhaseVocoder {
 // Section 1: Analysis
 
 fn generate_frames(samples: &Vec<f32>, frame_size: usize, hop_size: usize) -> Vec<Vec<f32>> {
-    println!("generating frames...");
-
     // calculate number of frames
     let n_frames = 1 + (samples.len() - frame_size) / hop_size; // this line may need redoing for safety, e.g. ensuring n_frames is positive
 
@@ -143,7 +141,6 @@ where
 }
 
 fn fft(frames: Vec<Vec<f32>>) -> Vec<Vec<Complex<f32>>> {
-    println!("running FFT...");
     let mut fft_frames: Vec<Vec<Complex<f32>>> = Vec::with_capacity(frames.len());
     for frame in frames {
         let fft_frame = apply_fft_to_frame(&frame, FftDirection::Forward);
@@ -159,7 +156,6 @@ fn fft(frames: Vec<Vec<f32>>) -> Vec<Vec<Complex<f32>>> {
 // we now have fixed frequency bins, but we want the true frequencies (which in general lie between bins)
 // to do this we start by getting the phase differences between frames
 fn get_phase_difference(fft_spectrum: &Vec<Vec<Complex<f32>>>) -> Vec<Vec<f32>> {
-    println!("getting phase differences...");
     let mut phase_diffs: Vec<Vec<f32>> = Vec::with_capacity(fft_spectrum.len());
 
     // first frame needs to be done manually
@@ -187,7 +183,6 @@ fn get_phase_difference(fft_spectrum: &Vec<Vec<Complex<f32>>>) -> Vec<Vec<f32>> 
 }
 
 fn correct_phase_diffs(phase_diffs: Vec<Vec<f32>>, hop_size: usize) -> Vec<Vec<f32>> {
-    println!("correcting phase differences...");
     // We remove the expected phase difference due to natural accumulation
     // We also wrap back to [-π, π]
     let mut corrected_phase_diffs: Vec<Vec<f32>> = Vec::with_capacity(phase_diffs.len());
@@ -209,7 +204,6 @@ fn correct_phase_diffs(phase_diffs: Vec<Vec<f32>>, hop_size: usize) -> Vec<Vec<f
 
 // gets the true frequency bins from the given bins and the phase differences
 fn get_true_frequency(phase_differences: Vec<Vec<f32>>, hop_size: usize) -> Vec<Vec<f32>> {
-    println!("getting true frequencies...");
     let mut true_frequencies: Vec<Vec<f32>> = Vec::with_capacity(phase_differences.len());
     for diff in phase_differences.iter() {
         let true_freq_frame: Vec<f32> = diff
@@ -227,7 +221,6 @@ fn get_true_frequency(phase_differences: Vec<Vec<f32>>, hop_size: usize) -> Vec<
 }
 
 fn get_cumulative_phases(true_frequencies: Vec<Vec<f32>>, hop_out: usize) -> Vec<Vec<f32>> {
-    println!("getting cumulative phases...");
     let mut final_phases: Vec<Vec<f32>> = Vec::with_capacity(true_frequencies.len());
 
     // first frame needs to be done manually
@@ -251,7 +244,6 @@ fn get_cumulative_phases(true_frequencies: Vec<Vec<f32>>, hop_out: usize) -> Vec
 // Section 3: Synthesis
 
 fn inverse_fft(fft_spectrum: &Vec<Vec<Complex<f32>>>, phases: &Vec<Vec<f32>>) -> Vec<Vec<f32>> {
-    println!("running inverse FFT...");
     let mut output_frames: Vec<Vec<f32>> = Vec::with_capacity(fft_spectrum.len());
     for (fft_frame, phase_frame) in fft_spectrum.iter().zip(phases.iter()) {
         let rotated_frame = phase_vocoder_helpers::produce_output_frame(fft_frame, phase_frame);
@@ -270,7 +262,6 @@ fn overlap_add_frames(
     hop_out: usize,
     apply_window: bool,
 ) -> Vec<f32> {
-    println!("overlap adding frames...");
     let mut raw_frames: Vec<Vec<f32>> = Vec::with_capacity(output_frames.len());
     for frame in output_frames {
         let output_frame = if apply_window {
@@ -310,17 +301,12 @@ fn overlap_add_frames(
 // Section 4: Resampling
 
 fn resample(waveform: WaveForm, alpha: f32) -> WaveForm {
-    println!("resampling...");
-    println!("length = {}", waveform.len());
     let x_axis: Vec<f32> = (0..waveform.len()).map(|v| v as f32).collect();
-    println!("final x val = {}", x_axis[x_axis.len() - 1]);
-    let query_axis: Vec<f32> = (0..)
+    let query: Vec<f32> = (0..)
         .map(|i| (i as f32) * alpha)
-        .take_while(|&x| x < (waveform.len() as f32))
+        .take_while(|&x| x < ((waveform.len() - 1) as f32))
         .collect();
-    println!("final query val = {}", query_axis[query_axis.len() - 1]);
-    let resampled_waveform = interp_slice(&x_axis, &waveform, &query_axis, &InterpMode::default());
-    println!("interpolation done");
+    let resampled_waveform = monointerp(&query, &x_axis, &waveform).unwrap_or_default();
     return resampled_waveform;
 }
 

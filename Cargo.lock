@@ -26,9 +26,8 @@ version = "0.1.0"
 dependencies = [
  "apodize",
  "hound",
- "interp",
- "interpolation",
  "itertools",
+ "rust-interpolation",
  "rustfft",
 ]
 
@@ -37,22 +36,6 @@ name = "hound"
 version = "3.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "62adaabb884c94955b19907d60019f4e145d091c75345379e70d1ee696f7854f"
-
-[[package]]
-name = "interp"
-version = "2.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bbf8add5dd9442596f3c5f504fd4fbbdf6266ff2337a51f6430dfeff6fd3a4de"
-dependencies = [
- "itertools",
- "num-traits",
-]
-
-[[package]]
-name = "interpolation"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e9c13ae9d91148fcb4aab6654c4c2a7d02a15395ea9e23f65170f175f8b269ce"
 
 [[package]]
 name = "itertools"
@@ -97,6 +80,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc0d895b311e3af9902528fbb8f928688abbd95872819320517cc24ca6b2bd08"
 dependencies = [
  "num-integer",
+]
+
+[[package]]
+name = "rust-interpolation"
+version = "0.1.0"
+source = "git+https://github.com/sethrprice/monointerp.git#e73594fe261fd4306eb76a764c08d886c50d6a92"
+dependencies = [
+ "num-traits",
 ]
 
 [[package]]
