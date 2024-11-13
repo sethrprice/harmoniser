@@ -33,7 +33,11 @@ impl PhaseVocoder {
         let two: f32 = 2.0;
         let alpha = two.powf((semitones as f32) / 12.0);
         let hop_out = (alpha * (self.hop_size as f32)).round() as usize;
-        println!("waveform length = {}", waveform.len());
+
+        println!(
+            "the original waveform midpoint is {}",
+            waveform[waveform.len() / 2]
+        );
 
         // Analysis
         println!("start analysis...");
@@ -54,17 +58,17 @@ impl PhaseVocoder {
         // Synthesis
         println!("start synthesis...");
         let output_frames = inverse_fft(&fft_frames, &final_phases);
+        println!(
+            "inverse fft midpoint is {}",
+            output_frames[output_frames.len() / 2][self.frame_size / 2]
+        );
         let overlapped_waveform = overlap_add_frames(output_frames, hop_out, true);
+        println!(
+            "overlapped wave midpoint is {}",
+            overlapped_waveform[overlapped_waveform.len() / 2]
+        );
         println!("end synthesis...");
         // End synthesis
-
-        // debug check for NaNs
-        let check = if contains_nan(&overlapped_waveform) {
-            "Yes."
-        } else {
-            "No."
-        };
-        println!("does the waveform contain NaNs? {check}");
 
         // Resampling
         println!("start resampling...");
@@ -86,7 +90,7 @@ impl PhaseVocoder {
                 let stereowave: StereoWave = split_stereo_wave(&self.waveform);
                 let left = stereowave.get_left_channel();
                 let right = stereowave.get_right_channel();
-                let output_left = self.shift_channel(left, semitones);
+                let output_left = self.shift_channel(&left, semitones);
                 let output_right = self.shift_channel(&right, semitones);
                 let output_stereo = StereoWave::new(output_left, output_right).unwrap();
                 let output: WaveForm = output_stereo.into();
@@ -250,7 +254,7 @@ fn inverse_fft(fft_spectrum: &Vec<Vec<Complex<f32>>>, phases: &Vec<Vec<f32>>) ->
         let output_frame = apply_fft_to_frame(&rotated_frame, FftDirection::Inverse)
             // take the real part
             .iter()
-            .map(|c| c.re)
+            .map(|c| c.re / (rotated_frame.len() as f32))
             .collect();
         output_frames.push(output_frame);
     }
@@ -311,10 +315,6 @@ fn resample(waveform: WaveForm, alpha: f32) -> WaveForm {
 }
 
 // End section 4
-
-fn contains_nan(v: &Vec<f32>) -> bool {
-    v.iter().any(|&x| x.is_nan())
-}
 
 mod phase_vocoder_helpers {
     use crate::wave::{StereoWave, WaveForm};
@@ -457,42 +457,9 @@ mod tests {
         assert!((x - PI).abs() < 0.0001);
     }
 
-    #[test] //TODO get this test right
-    fn true_frequency() {
-        // Analysis
-        let size = 1024;
-        let mut waveform: Vec<f32> = Vec::with_capacity(size);
-        for i in 0..size {
-            let sample = f32::sin((i as f32) * PI / 20.0);
-            waveform.push(sample);
-        }
-        let frame_size = 128;
-        let hop_size = frame_size / 4;
-        let frames = generate_frames(&waveform, frame_size, hop_size);
-        let fft_frames = fft(frames);
-        println!("{:?}", fft_frames[2]);
-        let mut show: Vec<Vec<f32>> = Vec::new();
-        for frame in fft_frames.iter() {
-            let new_frame = frame
-                .iter()
-                .map(|c| if c.norm() < 0.001 { 0.0 } else { c.norm() })
-                .collect();
-            show.push(new_frame);
-        }
-        println!("{:?}", show[2]);
-        // End analysis
-
-        // Processing
-        let phase_differences = get_phase_difference(&fft_frames);
-        let corrected_phase_differences = correct_phase_diffs(phase_differences, hop_size);
-        let true_frequencies = get_true_frequency(corrected_phase_differences, hop_size);
-        println!("{:?}", true_frequencies[2]);
-        assert_eq!(1, 1);
-    }
-
     // End Test Section 2
 
-    // Test Se3ction 3: Synthesis
+    // Test Section 3: Synthesis
 
     #[test]
     fn test_output_frame() {
@@ -526,4 +493,6 @@ mod tests {
     // Test Section 4 Resampling
 
     // End Test Section 4
+
+    // Overall Tests
 }
