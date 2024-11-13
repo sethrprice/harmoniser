@@ -1,8 +1,11 @@
 use crate::wave::{ChannelType, StereoWave, Wave, WaveForm, WaveMetaData};
+use apodize::hanning_iter;
 use phase_vocoder_helpers::split_stereo_wave;
 use rust_interpolation::monointerp;
 use rustfft::{algorithm::Radix4, num_complex::Complex, Fft, FftDirection};
 use std::f32::consts::PI;
+mod framed_vec;
+use framed_vec::FramedVec;
 
 pub struct PhaseVocoder {
     frame_size: usize,
@@ -111,26 +114,35 @@ impl PhaseVocoder {
 
 // Section 1: Analysis
 
-fn generate_frames(samples: &Vec<f32>, frame_size: usize, hop_size: usize) -> Vec<Vec<f32>> {
-    // calculate number of frames
-    let n_frames = 1 + (samples.len() - frame_size) / hop_size; // this line may need redoing for safety, e.g. ensuring n_frames is positive
+fn generate_frames<T>(samples: Vec<T>, frame_size: usize, hop_size: usize) -> FramedVec<T> {
+    // frames now generated contiguously
 
-    // create an empty vec for the frames
-    // TODO optimise by using Vec<[T; N]>, or ndarray crate, or Vec<Box<[T]>>
-    let mut frames: Vec<Vec<f32>> = Vec::with_capacity(n_frames);
+    FramedVec::new(samples, frame_size, hop_size)
+}
 
-    // iterate over frames, multiplying waveform by hanning window and populating Vec
-    for i in 0..n_frames {
-        let start = i * hop_size;
-        let end = start + frame_size;
-        let new_frame = phase_vocoder_helpers::apply_hanning_window(&samples[start..end], hop_size);
-        frames.push(new_frame);
-    }
+pub fn generate_hanning_window(length: usize) -> Vec<f32> {
+    // generate a symmetrical Hanning window
+    let window: Vec<f32> = hanning_iter(length * 2 + 1)
+        .skip(1)
+        .step_by(2)
+        .map(|v| v as f32)
+        .collect();
+    return window;
+}
 
-    let n_frames = frames.len();
-    println!("number of frames is {n_frames}");
+pub fn apply_hanning_window(frame: &[f32], hop: usize) -> Vec<f32> {
+    // normalisation of window compensates for overlap adding
+    let normalisation = (((frame.len() / hop) / 2) as f32).sqrt();
 
-    return frames;
+    let window = generate_hanning_window(frame.len());
+
+    let windowed_frame = frame
+        .iter()
+        .zip(window.iter())
+        .map(|(data, w)| data * w / normalisation)
+        .collect();
+
+    return windowed_frame;
 }
 
 fn apply_fft_to_frame<T>(frame: &[T], direction: FftDirection) -> Vec<Complex<f32>>
@@ -144,8 +156,14 @@ where
     return buffer;
 }
 
-fn fft(frames: Vec<Vec<f32>>) -> Vec<Vec<Complex<f32>>> {
-    let mut fft_frames: Vec<Vec<Complex<f32>>> = Vec::with_capacity(frames.len());
+fn fft(frames: FramedVec<f32>) -> FramedVec<Complex<f32>> {
+    let mut fft_frames: Vec<Complex<f32>> = Vec::with_capacity(frames.len());
+
+    for frame in frames.iter() {
+        let windowed_frame = apply_hanning_window(frame, hop);
+        let fft_frame = apply_fft_to_frame(windowed_frame, FftDirection::Forward);
+    }
+
     for frame in frames {
         let fft_frame = apply_fft_to_frame(&frame, FftDirection::Forward);
         fft_frames.push(fft_frame);
@@ -329,16 +347,6 @@ mod phase_vocoder_helpers {
         ((a % b) + b) % b
     }
 
-    pub fn generate_hanning_window(length: usize) -> Vec<f32> {
-        // generate a symmetrical Hanning window
-        let window: Vec<f32> = hanning_iter(length * 2 + 1)
-            .skip(1)
-            .step_by(2)
-            .map(|v| v as f32)
-            .collect();
-        return window;
-    }
-
     pub fn produce_output_frame(
         fft_spectrum_frame: &[Complex<f32>],
         phase_frame: &[f32],
@@ -361,21 +369,6 @@ mod phase_vocoder_helpers {
         padded_vec[padding_length..].copy_from_slice(waveform);
 
         return padded_vec;
-    }
-
-    pub fn apply_hanning_window(frame: &[f32], hop: usize) -> Vec<f32> {
-        // normalisation of window compensates for overlap adding
-        let normalisation = (((frame.len() / hop) / 2) as f32).sqrt();
-
-        let window = generate_hanning_window(frame.len());
-
-        let windowed_frame = frame
-            .iter()
-            .zip(window.iter())
-            .map(|(data, w)| data * w / normalisation)
-            .collect();
-
-        return windowed_frame;
     }
 
     pub fn split_stereo_wave(samples: &Vec<f32>) -> StereoWave {
