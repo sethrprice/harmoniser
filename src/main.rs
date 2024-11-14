@@ -15,11 +15,11 @@ fn main() {
 }
 
 fn run() -> Result<(), Box<dyn Error>> {
-    let wave = Wave::try_from("test.wav")?;
+    let wave = Wave::try_from("rachel.wav")?;
     println!("{wave:?}");
     let phase_vocoder = PhaseVocoder::new(&wave, FRAME_SIZE);
     let new_wave = phase_vocoder.shift_signal(3);
     println!("{new_wave:?}");
-    new_wave.write_to_wav_file("test_out.wav")?;
+    new_wave.write_to_wav_file("rachel_out.wav")?;
     Ok(())
 }
