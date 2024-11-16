@@ -1,7 +1,7 @@
 pub struct FramedVec<T> {
     vec: Vec<T>,
     hop_size: usize,
-    frame_length: usize,
+    frame_size: usize,
     indices: Vec<(usize, usize)>,
 }
 
@@ -11,16 +11,17 @@ pub struct FrameIter<'a, T> {
 }
 
 impl<T> FramedVec<T> {
-    pub fn new(vec: Vec<T>, frame_length: usize, hop_size: usize) -> Self {
+    pub fn new(vec: Vec<T>, frame_size: usize, hop_size: usize) -> Self {
         let indices: Vec<(usize, usize)> = (0..vec.len())
-            .map(|i| (i * hop_size, i * hop_size + frame_length))
-            .take_while(|&(i, _)| i < vec.len())
+            .map(|i| (i * hop_size, i * hop_size + frame_size))
+            // TODO think about what happens to any leftover tail -- do I need to account for this?
+            .take_while(|&(i, _)| i * hop_size + frame_size < vec.len())
             .collect();
 
         Self {
             vec,
             hop_size,
-            frame_length,
+            frame_size,
             indices,
         }
     }
@@ -29,11 +30,25 @@ impl<T> FramedVec<T> {
         self.vec.len()
     }
 
+    pub fn non_overlapping_len(&self) -> usize {
+        let n_frames = (self.len() - self.frame_size) / self.hop_size;
+        let n_samples = n_frames * self.frame_size;
+        return n_samples;
+    }
+
     pub fn iter(&self) -> FrameIter<T> {
         FrameIter {
             vec: &self.vec,
             indices: self.indices.iter(),
         }
+    }
+
+    pub fn hop(&self) -> usize {
+        self.hop_size
+    }
+
+    pub fn frame_size(&self) -> usize {
+        self.frame_size
     }
 }
 

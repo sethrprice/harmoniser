@@ -114,7 +114,7 @@ impl PhaseVocoder {
 
 // Section 1: Analysis
 
-fn generate_frames<T>(samples: Vec<T>, frame_size: usize, hop_size: usize) -> FramedVec<T> {
+fn generate_frames(samples: Vec<f32>, frame_size: usize, hop_size: usize) -> FramedVec<f32> {
     // frames now generated contiguously
 
     FramedVec::new(samples, frame_size, hop_size)
@@ -157,18 +157,19 @@ where
 }
 
 fn fft(frames: FramedVec<f32>) -> FramedVec<Complex<f32>> {
-    let mut fft_frames: Vec<Complex<f32>> = Vec::with_capacity(frames.len());
+    let mut fft_frames: Vec<Complex<f32>> = Vec::with_capacity(frames.non_overlapping_len());
 
     for frame in frames.iter() {
-        let windowed_frame = apply_hanning_window(frame, hop);
-        let fft_frame = apply_fft_to_frame(windowed_frame, FftDirection::Forward);
+        let windowed_frame = apply_hanning_window(frame, frames.hop());
+        let fft_frame = apply_fft_to_frame(&windowed_frame, FftDirection::Forward);
+
+        for val in fft_frame {
+            fft_frames.push(val);
+        }
     }
 
-    for frame in frames {
-        let fft_frame = apply_fft_to_frame(&frame, FftDirection::Forward);
-        fft_frames.push(fft_frame);
-    }
-    return fft_frames;
+    // hop is now frame size because fft spectrum has no overlapping
+    FramedVec::new(fft_frames, frames.frame_size(), frames.frame_size())
 }
 
 // End section 1
@@ -177,12 +178,18 @@ fn fft(frames: FramedVec<f32>) -> FramedVec<Complex<f32>> {
 
 // we now have fixed frequency bins, but we want the true frequencies (which in general lie between bins)
 // to do this we start by getting the phase differences between frames
-fn get_phase_difference(fft_spectrum: &Vec<Vec<Complex<f32>>>) -> Vec<Vec<f32>> {
-    let mut phase_diffs: Vec<Vec<f32>> = Vec::with_capacity(fft_spectrum.len());
+fn get_phase_difference(fft_spectrum: &FramedVec<Complex<f32>>) -> FramedVec<f32> {
+    let mut phase_diffs: Vec<f32> = Vec::with_capacity(fft_spectrum.len());
 
     // first frame needs to be done manually
-    let first_frame_diffs: Vec<f32> = fft_spectrum[0].iter().map(|c| c.arg()).collect();
-    phase_diffs.push(first_frame_diffs);
+    let first_frame_diffs: Vec<f32> = fft_spectrum
+        .iter()
+        .take(1)
+        .flat_map(|frame| frame.iter().map(|c| c.arg()))
+        .collect();
+    for diff in first_frame_diffs {
+        phase_diffs.push(diff);
+    }
 
     // iterate over all consecutive frames and take the phase difference between them
     for (prev_frame, curr_frame) in fft_spectrum.iter().zip(fft_spectrum.iter().skip(1)) {
@@ -198,16 +205,22 @@ fn get_phase_difference(fft_spectrum: &Vec<Vec<Complex<f32>>>) -> Vec<Vec<f32>> 
             })
             .collect();
 
-        phase_diffs.push(frame_diffs);
+        for diff in frame_diffs {
+            phase_diffs.push(diff);
+        }
     }
 
-    return phase_diffs;
+    FramedVec::new(
+        phase_diffs,
+        fft_spectrum.frame_size(),
+        fft_spectrum.frame_size(),
+    )
 }
 
-fn correct_phase_diffs(phase_diffs: Vec<Vec<f32>>, hop_size: usize) -> Vec<Vec<f32>> {
+fn correct_phase_diffs(phase_diffs: FramedVec<f32>, hop_size: usize) -> FramedVec<f32> {
     // We remove the expected phase difference due to natural accumulation
     // We also wrap back to [-π, π]
-    let mut corrected_phase_diffs: Vec<Vec<f32>> = Vec::with_capacity(phase_diffs.len());
+    let mut corrected_phase_diffs: Vec<f32> = Vec::with_capacity(phase_diffs.len());
 
     for diff in phase_diffs.iter() {
         let corrected_diff: Vec<f32> = diff
@@ -218,10 +231,16 @@ fn correct_phase_diffs(phase_diffs: Vec<Vec<f32>>, hop_size: usize) -> Vec<Vec<f
                 phase_vocoder_helpers::modulo(observed - expected + PI, 2.0 * PI) - PI
             })
             .collect();
-        corrected_phase_diffs.push(corrected_diff);
+        for c_diff in corrected_diff {
+            corrected_phase_diffs.push(c_diff);
+        }
     }
 
-    return corrected_phase_diffs;
+    FramedVec::new(
+        corrected_phase_diffs,
+        phase_diffs.frame_size(),
+        phase_diffs.frame_size(),
+    )
 }
 
 // gets the true frequency bins from the given bins and the phase differences
