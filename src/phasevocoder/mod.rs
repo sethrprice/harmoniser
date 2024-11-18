@@ -34,11 +34,6 @@ impl PhaseVocoder {
         let alpha = two.powf((semitones as f32) / 12.0);
         let hop_out = (alpha * (self.hop_size as f32)).round() as usize;
 
-        println!(
-            "the original waveform midpoint is {}",
-            waveform[waveform.len() / 2]
-        );
-
         // Analysis
         println!("start analysis...");
         let frames = generate_frames(&waveform, self.frame_size, self.hop_size);
@@ -58,15 +53,7 @@ impl PhaseVocoder {
         // Synthesis
         println!("start synthesis...");
         let output_frames = inverse_fft(&fft_frames, &final_phases);
-        println!(
-            "inverse fft midpoint is {}",
-            output_frames[output_frames.len() / 2][self.frame_size / 2]
-        );
         let overlapped_waveform = overlap_add_frames(output_frames, hop_out, true);
-        println!(
-            "overlapped wave midpoint is {}",
-            overlapped_waveform[overlapped_waveform.len() / 2]
-        );
         println!("end synthesis...");
         // End synthesis
 
@@ -129,6 +116,7 @@ fn generate_frames(samples: &Vec<f32>, frame_size: usize, hop_size: usize) -> Ve
 
     let n_frames = frames.len();
     println!("number of frames is {n_frames}");
+    println!("number of samples is {}", samples.len());
 
     return frames;
 }
@@ -311,6 +299,7 @@ fn resample(waveform: WaveForm, alpha: f32) -> WaveForm {
         .take_while(|&x| x < ((waveform.len() - 1) as f32))
         .collect();
     let resampled_waveform = monointerp(&query, &x_axis, &waveform).unwrap_or_default();
+    println!("number of output samples is {}", resampled_waveform.len());
     return resampled_waveform;
 }
 
