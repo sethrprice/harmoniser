@@ -1,3 +1,6 @@
+use rustfft::num_traits::Num;
+
+#[derive(PartialEq, Debug)]
 pub struct FramedVec<T> {
     vec: Vec<T>,
     hop_size: usize,
@@ -10,30 +13,41 @@ pub struct FrameIter<'a, T> {
     indices: std::slice::Iter<'a, (usize, usize)>,
 }
 
-impl<T> FramedVec<T> {
+impl<T: Clone + Num> FramedVec<T> {
     pub fn new(vec: Vec<T>, frame_size: usize, hop_size: usize) -> Self {
-        let indices: Vec<(usize, usize)> = (0..vec.len())
+        // calculate the number of frames and the length of the vector + the padding
+        let num_frames = (vec.len() + hop_size - 1) / hop_size;
+        let padded_length = (num_frames.saturating_sub(1)) * hop_size + frame_size;
+
+        // pad the vector so we always frame all our samples
+        let mut padded_vec = vec.clone();
+        padded_vec.resize(padded_length, T::zero());
+
+        let indices: Vec<(usize, usize)> = (0..num_frames)
             .map(|i| (i * hop_size, i * hop_size + frame_size))
-            // TODO think about what happens to any leftover tail -- do I need to account for this?
-            .take_while(|&(i, _)| i * hop_size + frame_size < vec.len())
             .collect();
 
         Self {
-            vec,
+            vec: padded_vec,
             hop_size,
             frame_size,
             indices,
         }
     }
 
-    pub fn len(&self) -> usize {
-        self.vec.len()
+    pub fn new_empty_non_overlapped(length: usize, frame_size: usize) -> Self {
+        let vec = Vec::with_capacity(length);
+        Self::new(vec, frame_size, frame_size)
     }
 
-    pub fn non_overlapping_len(&self) -> usize {
-        let n_frames = (self.len() - self.frame_size) / self.hop_size;
-        let n_samples = n_frames * self.frame_size;
-        return n_samples;
+    pub fn push(&mut self, frame: Vec<T>) {
+        for element in frame {
+            self.vec.push(element);
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.vec.len()
     }
 
     pub fn iter(&self) -> FrameIter<T> {
@@ -49,6 +63,19 @@ impl<T> FramedVec<T> {
 
     pub fn frame_size(&self) -> usize {
         self.frame_size
+    }
+
+    pub fn update_indices(&mut self) {
+        let num_frames = (self.vec.len() + self.hop_size - 1) / self.hop_size;
+        let padded_length = (num_frames - 1) * self.hop_size + self.frame_size;
+
+        self.vec.resize(padded_length, T::zero());
+
+        let indices: Vec<(usize, usize)> = (0..num_frames)
+            .map(|i| (i * self.hop_size, i * self.hop_size + self.frame_size))
+            .collect();
+
+        self.indices = indices;
     }
 }
 

@@ -37,14 +37,10 @@ impl PhaseVocoder {
         let alpha = two.powf((semitones as f32) / 12.0);
         let hop_out = (alpha * (self.hop_size as f32)).round() as usize;
 
-        println!(
-            "the original waveform midpoint is {}",
-            waveform[waveform.len() / 2]
-        );
-
         // Analysis
         println!("start analysis...");
-        let frames = generate_frames(&waveform, self.frame_size, self.hop_size);
+        let frames = generate_frames(waveform.to_vec(), self.frame_size, self.hop_size);
+        println!("number of samples = {}", frames.len());
         let fft_frames = fft(frames);
         println!("end analysis...");
         // End analysis
@@ -61,15 +57,7 @@ impl PhaseVocoder {
         // Synthesis
         println!("start synthesis...");
         let output_frames = inverse_fft(&fft_frames, &final_phases);
-        println!(
-            "inverse fft midpoint is {}",
-            output_frames[output_frames.len() / 2][self.frame_size / 2]
-        );
         let overlapped_waveform = overlap_add_frames(output_frames, hop_out, true);
-        println!(
-            "overlapped wave midpoint is {}",
-            overlapped_waveform[overlapped_waveform.len() / 2]
-        );
         println!("end synthesis...");
         // End synthesis
 
@@ -93,8 +81,8 @@ impl PhaseVocoder {
                 let stereowave: StereoWave = split_stereo_wave(&self.waveform);
                 let left = stereowave.get_left_channel();
                 let right = stereowave.get_right_channel();
-                let output_left = self.shift_channel(&left, semitones);
-                let output_right = self.shift_channel(&right, semitones);
+                let output_left = self.shift_channel(left, semitones);
+                let output_right = self.shift_channel(right, semitones);
                 let output_stereo = StereoWave::new(output_left, output_right).unwrap();
                 let output: WaveForm = output_stereo.into();
                 output
@@ -157,19 +145,19 @@ where
 }
 
 fn fft(frames: FramedVec<f32>) -> FramedVec<Complex<f32>> {
-    let mut fft_frames: Vec<Complex<f32>> = Vec::with_capacity(frames.non_overlapping_len());
+    let mut fft_frames: FramedVec<Complex<f32>> =
+        FramedVec::new_empty_non_overlapped(frames.len(), frames.frame_size());
 
     for frame in frames.iter() {
         let windowed_frame = apply_hanning_window(frame, frames.hop());
         let fft_frame = apply_fft_to_frame(&windowed_frame, FftDirection::Forward);
 
-        for val in fft_frame {
-            fft_frames.push(val);
-        }
+        fft_frames.push(fft_frame);
     }
+    fft_frames.update_indices();
 
     // hop is now frame size because fft spectrum has no overlapping
-    FramedVec::new(fft_frames, frames.frame_size(), frames.frame_size())
+    return fft_frames;
 }
 
 // End section 1
@@ -244,8 +232,8 @@ fn correct_phase_diffs(phase_diffs: FramedVec<f32>, hop_size: usize) -> FramedVe
 }
 
 // gets the true frequency bins from the given bins and the phase differences
-fn get_true_frequency(phase_differences: Vec<Vec<f32>>, hop_size: usize) -> Vec<Vec<f32>> {
-    let mut true_frequencies: Vec<Vec<f32>> = Vec::with_capacity(phase_differences.len());
+fn get_true_frequency(phase_differences: FramedVec<f32>, hop_size: usize) -> FramedVec<f32> {
+    let mut true_frequencies: Vec<f32> = Vec::with_capacity(phase_differences.len());
     for diff in phase_differences.iter() {
         let true_freq_frame: Vec<f32> = diff
             .iter()
@@ -255,28 +243,35 @@ fn get_true_frequency(phase_differences: Vec<Vec<f32>>, hop_size: usize) -> Vec<
                 bin_freq + pd / (hop_size as f32)
             })
             .collect();
-        true_frequencies.push(true_freq_frame);
+        for true_freq in true_freq_frame {
+            true_frequencies.push(true_freq);
+        }
     }
 
-    return true_frequencies;
+    FramedVec::new(
+        true_frequencies,
+        phase_differences.frame_size(),
+        phase_differences.frame_size(),
+    )
 }
 
-fn get_cumulative_phases(true_frequencies: Vec<Vec<f32>>, hop_out: usize) -> Vec<Vec<f32>> {
-    let mut final_phases: Vec<Vec<f32>> = Vec::with_capacity(true_frequencies.len());
+fn get_cumulative_phases(true_frequencies: FramedVec<f32>, hop_out: usize) -> FramedVec<f32> {
+    let mut final_phases: FramedVec<f32> = FramedVec::new(
+        Vec::with_capacity(true_frequencies.len()),
+        true_frequencies.frame_size(),
+        true_frequencies.frame_size(),
+    );
 
-    // first frame needs to be done manually
-    let first_phases: Vec<f32> = true_frequencies[0]
-        .iter()
-        .map(|f| f * (hop_out as f32))
-        .collect();
-    final_phases.push(first_phases);
-
-    for (i, freq_frame) in true_frequencies.iter().skip(1).enumerate() {
+    for freq_frame in true_frequencies.iter() {
         let phase_diff_frame: Vec<f32> = freq_frame.iter().map(|f| f * (hop_out as f32)).collect();
+        let default: Vec<f32> = vec![0.; phase_diff_frame.len()];
+        // first frame no longer needs to be done manually
+        let prev_frame = final_phases.iter().last().unwrap_or(&default);
         let cumulative_phase_frame =
-            phase_vocoder_helpers::elementwise_add(&final_phases[i], &phase_diff_frame);
+            phase_vocoder_helpers::elementwise_add(prev_frame, &phase_diff_frame);
         final_phases.push(cumulative_phase_frame);
     }
+    final_phases.update_indices();
     return final_phases;
 }
 
@@ -284,44 +279,52 @@ fn get_cumulative_phases(true_frequencies: Vec<Vec<f32>>, hop_out: usize) -> Vec
 
 // Section 3: Synthesis
 
-fn inverse_fft(fft_spectrum: &Vec<Vec<Complex<f32>>>, phases: &Vec<Vec<f32>>) -> Vec<Vec<f32>> {
-    let mut output_frames: Vec<Vec<f32>> = Vec::with_capacity(fft_spectrum.len());
+fn inverse_fft(fft_spectrum: &FramedVec<Complex<f32>>, phases: &FramedVec<f32>) -> FramedVec<f32> {
+    let mut output_frames: FramedVec<f32> =
+        FramedVec::new_empty_non_overlapped(fft_spectrum.len(), fft_spectrum.frame_size());
     for (fft_frame, phase_frame) in fft_spectrum.iter().zip(phases.iter()) {
         let rotated_frame = phase_vocoder_helpers::produce_output_frame(fft_frame, phase_frame);
-        let output_frame = apply_fft_to_frame(&rotated_frame, FftDirection::Inverse)
-            // take the real part
+        let output_frame: Vec<f32> = apply_fft_to_frame(&rotated_frame, FftDirection::Inverse)
+            // take the real part and normalise
             .iter()
             .map(|c| c.re / (rotated_frame.len() as f32))
             .collect();
         output_frames.push(output_frame);
     }
+    output_frames.update_indices();
     return output_frames;
 }
 
+// TODO I expect this function will need further optimising
 fn overlap_add_frames(
-    output_frames: Vec<Vec<f32>>,
+    output_frames: FramedVec<f32>,
     hop_out: usize,
     apply_window: bool,
 ) -> Vec<f32> {
-    let mut raw_frames: Vec<Vec<f32>> = Vec::with_capacity(output_frames.len());
-    for frame in output_frames {
+    let mut raw_frames: FramedVec<f32> =
+        FramedVec::new_empty_non_overlapped(output_frames.len(), output_frames.frame_size());
+
+    for frame in output_frames.iter() {
         let output_frame = if apply_window {
-            phase_vocoder_helpers::apply_hanning_window(&frame, hop_out)
+            apply_hanning_window(&frame, hop_out)
         } else {
-            frame
+            frame.to_vec()
         };
         raw_frames.push(output_frame);
     }
+    raw_frames.update_indices();
+
     // set up the vectors
-    let frame_length = raw_frames[0].len();
-    let waveform_size = (raw_frames.len() - 1) * hop_out + frame_length;
-    let mut overlapped_waveform: Vec<f32> = vec![0.0; waveform_size];
+    let frame_length = raw_frames.frame_size();
+    let new_waveform_size = (raw_frames.len() - 1) * hop_out + frame_length;
+    let mut overlapped_waveform: Vec<f32> = vec![0.0; new_waveform_size];
 
     // first iteration manually
     let range = 0..frame_length;
+    let default = vec![0.; frame_length];
     let overlap_slice = phase_vocoder_helpers::elementwise_add(
         &overlapped_waveform[range.clone()],
-        raw_frames[0].as_slice(),
+        raw_frames.iter().nth(1).unwrap_or(&default),
     );
     let _ = overlapped_waveform.splice(range, overlap_slice);
 
@@ -355,7 +358,6 @@ fn resample(waveform: WaveForm, alpha: f32) -> WaveForm {
 
 mod phase_vocoder_helpers {
     use crate::wave::{StereoWave, WaveForm};
-    use apodize::hanning_iter;
     use rustfft::num_complex::Complex;
 
     pub fn elementwise_add(v1: &[f32], v2: &[f32]) -> Vec<f32> {
@@ -454,13 +456,18 @@ mod tests {
 
     #[test]
     fn phase_difference_test() {
-        let example_fft: Vec<Vec<Complex<f32>>> = vec![
-            vec![Complex { re: 1.0, im: 0.0 }, Complex { re: 1.0, im: 1.0 }],
-            vec![Complex { re: 0.0, im: 1.0 }, Complex { re: 0.0, im: 1.0 }],
+        let my_vec = vec![
+            Complex { re: 1.0, im: 0.0 },
+            Complex { re: 1.0, im: 1.0 },
+            Complex { re: 0.0, im: 1.0 },
+            Complex { re: 0.0, im: 1.0 },
         ];
-        let output_vec = vec![vec![0.0, PI / 4.0], vec![PI / 2.0, PI / 4.0]];
+
+        let example_fft: FramedVec<Complex<f32>> = FramedVec::new(my_vec, 2, 2);
+        let output_vec = vec![0.0, PI / 4.0, PI / 2.0, PI / 4.0];
+        let output = FramedVec::new(output_vec, 2, 2);
         let phase_diffs = get_phase_difference(&example_fft);
-        assert_eq!(output_vec, phase_diffs);
+        assert_eq!(output, phase_diffs);
     }
 
     #[test]
@@ -495,7 +502,8 @@ mod tests {
     #[test]
     fn test_overlap_add() {
         let hop = 1;
-        let input: Vec<Vec<f32>> = vec![vec![1.0, 2.0, 3.0], vec![4.0, 5.0, 6.0]];
+        let my_vec = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let input: FramedVec<f32> = FramedVec::new(my_vec, 3, 3);
         let output: Vec<f32> = vec![1.0, 6.0, 8.0, 6.0];
         assert_eq!(output, overlap_add_frames(input, hop, false));
     }
