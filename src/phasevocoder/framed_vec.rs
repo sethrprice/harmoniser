@@ -1,5 +1,6 @@
 use rustfft::num_traits::Num;
 
+// TODO use Option instead of an empty vec
 #[derive(PartialEq, Debug)]
 pub struct FramedVec<T> {
     vec: Vec<T>,
@@ -35,9 +36,16 @@ impl<T: Clone + Num> FramedVec<T> {
         }
     }
 
+    // TODO use Option instead of an empty vec
     pub fn new_empty_non_overlapped(length: usize, frame_size: usize) -> Self {
         let vec = Vec::with_capacity(length);
-        Self::new(vec, frame_size, frame_size)
+        let indices = vec![];
+        Self {
+            vec,
+            hop_size: frame_size,
+            frame_size,
+            indices,
+        }
     }
 
     pub fn push(&mut self, frame: Vec<T>) {
@@ -76,6 +84,15 @@ impl<T: Clone + Num> FramedVec<T> {
             .collect();
 
         self.indices = indices;
+    }
+
+    pub fn number_of_frames(&self) -> usize {
+        self.indices.len()
+    }
+
+    #[cfg(test)]
+    pub fn clone_vec(&self) -> Vec<T> {
+        self.vec.clone()
     }
 }
 

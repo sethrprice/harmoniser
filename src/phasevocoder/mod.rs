@@ -256,11 +256,8 @@ fn get_true_frequency(phase_differences: FramedVec<f32>, hop_size: usize) -> Fra
 }
 
 fn get_cumulative_phases(true_frequencies: FramedVec<f32>, hop_out: usize) -> FramedVec<f32> {
-    let mut final_phases: FramedVec<f32> = FramedVec::new(
-        Vec::with_capacity(true_frequencies.len()),
-        true_frequencies.frame_size(),
-        true_frequencies.frame_size(),
-    );
+    let mut final_phases: FramedVec<f32> =
+        FramedVec::new_empty_non_overlapped(true_frequencies.len(), true_frequencies.frame_size());
 
     for freq_frame in true_frequencies.iter() {
         let phase_diff_frame: Vec<f32> = freq_frame.iter().map(|f| f * (hop_out as f32)).collect();
@@ -270,8 +267,9 @@ fn get_cumulative_phases(true_frequencies: FramedVec<f32>, hop_out: usize) -> Fr
         let cumulative_phase_frame =
             phase_vocoder_helpers::elementwise_add(prev_frame, &phase_diff_frame);
         final_phases.push(cumulative_phase_frame);
+        // TODO I'm updating indices every iteration -- this can't be efficient! Try to optimise
+        final_phases.update_indices();
     }
-    final_phases.update_indices();
     return final_phases;
 }
 
@@ -304,6 +302,7 @@ fn overlap_add_frames(
     let mut raw_frames: FramedVec<f32> =
         FramedVec::new_empty_non_overlapped(output_frames.len(), output_frames.frame_size());
 
+    // apply window to each frame
     for frame in output_frames.iter() {
         let output_frame = if apply_window {
             apply_hanning_window(&frame, hop_out)
@@ -316,21 +315,21 @@ fn overlap_add_frames(
 
     // set up the vectors
     let frame_length = raw_frames.frame_size();
-    let new_waveform_size = (raw_frames.len() - 1) * hop_out + frame_length;
-    let mut overlapped_waveform: Vec<f32> = vec![0.0; new_waveform_size];
+    let new_waveform_size = (raw_frames.number_of_frames() - 1) * hop_out + frame_length;
+    let mut overlapped_waveform: Vec<f32> = vec![0.; new_waveform_size];
 
     // first iteration manually
     let range = 0..frame_length;
     let default = vec![0.; frame_length];
-    let overlap_slice = phase_vocoder_helpers::elementwise_add(
-        &overlapped_waveform[range.clone()],
-        raw_frames.iter().nth(1).unwrap_or(&default),
-    );
+    let mut frame_iterator = raw_frames.iter();
+    let first_frame = frame_iterator.nth(0).unwrap_or(&default);
+    let overlap_slice =
+        phase_vocoder_helpers::elementwise_add(&overlapped_waveform[range.clone()], first_frame);
     let _ = overlapped_waveform.splice(range, overlap_slice);
 
     // overlap add by hop_out hop size
-    for (i, frame) in raw_frames.iter().enumerate().skip(1) {
-        let time_index = i * hop_out;
+    for (i, frame) in frame_iterator.enumerate() {
+        let time_index = (i + 1) * hop_out;
         let range = time_index..(time_index + frame_length);
         let overlap_slice =
             phase_vocoder_helpers::elementwise_add(&overlapped_waveform[range.clone()], frame);
@@ -422,6 +421,24 @@ mod tests {
     }
 
     // Test Section 1: Analysis
+
+    #[test]
+    fn test_generate_frames() {
+        let input: Vec<f32> = vec![0., 1., 2., 3., 4., 5.];
+        let output = vec![
+            vec![0., 1., 2.],
+            vec![1., 2., 3.],
+            vec![2., 3., 4.],
+            vec![3., 4., 5.],
+            vec![4., 5., 0.],
+            vec![5., 0., 0.],
+        ];
+        let frames = generate_frames(input, 3, 1);
+        for (i, frame) in frames.iter().enumerate() {
+            assert_eq!(frame, output[i]);
+        }
+    }
+
     #[test]
     fn hanning_window_generation() {
         let hanning_test: Vec<f32> = vec![
@@ -470,15 +487,79 @@ mod tests {
         assert_eq!(output, phase_diffs);
     }
 
+    // c = s - 2πi/N
+    #[test]
+    fn test_correct_phase_diffs() {
+        let my_vec = vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0];
+        let input = FramedVec::new(my_vec.clone(), 3, 3);
+        let corrected_pds = correct_phase_diffs(input, 1).clone_vec();
+        let output_vec: Vec<f32> = my_vec
+            .iter()
+            .enumerate()
+            .map(|(i, v)| {
+                phase_vocoder_helpers::modulo(v - 2. * PI * (i as f32) / 3. + PI, 2. * PI) - PI
+            })
+            .collect();
+        for (x, y) in corrected_pds.iter().zip(output_vec.iter()) {
+            println!("x: {x}, y: {y}");
+            assert!((x - y).abs() < 0.0001)
+        }
+    }
+
+    #[test]
+    fn test_true_frequency() {
+        let input: Vec<f32> = vec![0., 1., 2., 3., 4., 5.];
+        let phase_differences = FramedVec::new(input.clone(), 3, 3);
+        let true_freq = get_true_frequency(phase_differences, 2).clone_vec();
+        let output_vec: Vec<f32> = input
+            .iter()
+            .enumerate()
+            .map(|(i, v)| 2. * PI * modulo(i as f32, 3.) / 3. + v / 2.)
+            .collect();
+        for (x, y) in true_freq.iter().zip(output_vec.iter()) {
+            println!("x: {x}, y: {y}");
+            assert!((x - y).abs() < 0.0001);
+        }
+    }
+
     #[test]
     fn modulo_test() {
         let x: f32 = phase_vocoder_helpers::modulo(3.0 * PI, 2.0 * PI);
         assert!((x - PI).abs() < 0.0001);
     }
 
+    #[test]
+    fn test_cumulative_phases() {
+        let input: Vec<f32> = vec![0., 1., 2., 3., 4., 5.];
+        let true_freqs = FramedVec::new(input, 3, 3);
+        let cumulative_phases = get_cumulative_phases(true_freqs, 1).clone_vec();
+        let output_vec: Vec<f32> = vec![0., 1., 2., 3., 5., 7.];
+        for (x, y) in cumulative_phases.iter().zip(output_vec.iter()) {
+            println!("x: {x}, y: {y}");
+            assert!((x - y).abs() < 0.0001);
+        }
+    }
+
     // End Test Section 2
 
     // Test Section 3: Synthesis
+
+    #[test]
+    fn test_inverse_fft() {
+        let f: Vec<Complex<f32>> = vec![1.0, 2.0, 3.0, 4.0, 5.0, 4.0, 3.0, 2.0]
+            .iter()
+            .map(|n| n.into())
+            .collect();
+        let p: Vec<f32> = vec![PI; f.len()];
+        let freqs = FramedVec::new(f, 8, 8);
+        let phases = FramedVec::new(p, 8, 8);
+        let ifft_vec = inverse_fft(&freqs, &phases).clone_vec();
+        let output: Vec<f32> = vec![-3., 0.853553, 0., 0.146447, 0., 0.146447, 0., 0.853553];
+        for (x, y) in ifft_vec.iter().zip(output.iter()) {
+            println!("x: {x}, y: {y}");
+            assert!((x - y).abs() < 0.0001);
+        }
+    }
 
     #[test]
     fn test_output_frame() {
