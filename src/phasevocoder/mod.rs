@@ -3,6 +3,7 @@ use phase_vocoder_helpers::split_stereo_wave;
 use rust_interpolation::monointerp;
 use rustfft::{algorithm::Radix4, num_complex::Complex, Fft, FftDirection};
 use std::f32::consts::PI;
+use std::time::Instant;
 
 pub struct PhaseVocoder {
     frame_size: usize,
@@ -35,32 +36,38 @@ impl PhaseVocoder {
         let hop_out = (alpha * (self.hop_size as f32)).round() as usize;
 
         // Analysis
-        println!("start analysis...");
+        let now_analysis = Instant::now();
         let frames = generate_frames(&waveform, self.frame_size, self.hop_size);
         let fft_frames = fft(frames);
-        println!("end analysis...");
+        let elapsed_analysis = now_analysis.elapsed();
+        println!("analysis took {elapsed_analysis:.2?}");
         // End analysis
 
         // Processing
-        println!("start processing...");
+        let now_processing = Instant::now();
         let phase_differences = get_phase_difference(&fft_frames);
         let corrected_phase_differences = correct_phase_diffs(phase_differences, self.hop_size);
         let true_frequencies = get_true_frequency(corrected_phase_differences, self.hop_size);
         let final_phases = get_cumulative_phases(true_frequencies, hop_out);
-        println!("end processing");
+        let elapsed_processing = now_processing.elapsed();
+        println!("processing took {elapsed_processing:.2?}");
         // End processing
 
         // Synthesis
-        println!("start synthesis...");
+        let now_synthesis = Instant::now();
         let output_frames = inverse_fft(&fft_frames, &final_phases);
+        let elapsed_ifft = now_synthesis.elapsed();
+        println!("ifft took {elapsed_ifft:.2?}");
         let overlapped_waveform = overlap_add_frames(output_frames, hop_out, true);
-        println!("end synthesis...");
+        let elapsed_synthesis = now_synthesis.elapsed();
+        println!("synthesis took {elapsed_synthesis:.2?}");
         // End synthesis
 
         // Resampling
-        println!("start resampling...");
+        let now_resampling = Instant::now();
         let output_waveform = resample(overlapped_waveform, alpha);
-        println!("end resampling...");
+        let elapsed_resampling = now_resampling.elapsed();
+        println!("resampling took {elapsed_resampling:.2?}");
         // End resampling
 
         return output_waveform;
