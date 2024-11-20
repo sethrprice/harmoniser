@@ -301,6 +301,7 @@ fn overlap_add_frames(
 ) -> Vec<f32> {
     let mut raw_frames: FramedVec<f32> =
         FramedVec::new_empty_non_overlapped(output_frames.len(), output_frames.frame_size());
+    println!("frame size is {}", output_frames.frame_size());
 
     // apply window to each frame
     for frame in output_frames.iter() {
@@ -312,6 +313,7 @@ fn overlap_add_frames(
         raw_frames.push(output_frame);
     }
     raw_frames.update_indices();
+    println!("raw frames length is {}", raw_frames.len());
 
     // set up the vectors
     let frame_length = raw_frames.frame_size();
