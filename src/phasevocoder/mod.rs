@@ -6,6 +6,7 @@ use rustfft::{algorithm::Radix4, num_complex::Complex, Fft, FftDirection};
 use std::f32::consts::PI;
 mod framed_vec;
 use framed_vec::FramedVec;
+use rayon::prelude::*;
 use std::time::Instant;
 
 pub struct PhaseVocoder {
@@ -155,25 +156,34 @@ where
 }
 
 fn fft(frames: FramedVec<f32>, frame_size: usize, hop: usize) -> FramedVec<Complex<f32>> {
-    let mut fft_frames: FramedVec<Complex<f32>> =
-        FramedVec::with_capacity(frames.len(), frame_size, frame_size);
-
+    // precompute window
     let window = generate_hanning_window(frame_size, hop, true);
-    let default: Vec<f32> = vec![0.; frame_size];
-    let number_of_frames = frames.number_of_frames();
 
+    // precompute the default value for out-of-bounds indices
+    let default: Vec<f32> = vec![0.; frame_size];
+
+    // precompute frame info
+    let number_of_frames = frames.number_of_frames();
+    let total_fft_size = number_of_frames * frame_size;
+
+    // Preallocate contiguous storage for FFT results
+    let mut fft_frames: Vec<Complex<f32>> = vec![Complex { re: 0.0, im: 0.0 }; total_fft_size];
+
+    // precompute fft engine
     let fft_engine = Radix4::new(frame_size, FftDirection::Forward);
 
-    // TODO does writing this functional style improve performance?
-    for i in 0..number_of_frames {
-        let frame = frames.frame(i).unwrap_or(&default);
-        let windowed_frame = apply_hanning_window(frame, &window);
-        let fft_frame = apply_fft_to_frame(&windowed_frame, &fft_engine);
+    fft_frames
+        .par_chunks_mut(frame_size) // Split the contiguous buffer into chunks
+        .enumerate()
+        .for_each(|(i, fft_frame)| {
+            let frame = frames.frame(i).unwrap_or(&default);
+            let windowed_frame = apply_hanning_window(frame, &window);
 
-        fft_frames.extend_from_slice(&fft_frame);
-    }
+            // Convert windowed frame to complex and copy into fft_frame
+            fft_frame.copy_from_slice(&apply_fft_to_frame(&windowed_frame, &fft_engine));
+        });
 
-    return fft_frames;
+    return FramedVec::new(fft_frames, frame_size, frame_size);
 }
 
 // End section 1
@@ -297,23 +307,31 @@ fn get_cumulative_phases(true_frequencies: &FramedVec<f32>, hop_out: usize) -> F
 // Section 3: Synthesis
 
 fn inverse_fft(fft_spectrum: &FramedVec<Complex<f32>>, phases: &FramedVec<f32>) -> FramedVec<f32> {
-    let mut output_frames: FramedVec<f32> = FramedVec::with_capacity_like(phases);
-
     let number_of_frames = fft_spectrum.number_of_frames();
+    let frame_size = fft_spectrum.frame_size();
+    let total_ifft_size = number_of_frames * frame_size;
+
+    let mut ifft_frames: Vec<f32> = vec![0.; total_ifft_size];
+
     let ifft_engine = Radix4::new(fft_spectrum.frame_size(), FftDirection::Inverse);
 
-    for i in 0..number_of_frames {
-        let fft_frame = fft_spectrum.frame(i).expect("frame index out of bounds");
-        let phase_frame = phases.frame(i).expect("frame index out of bounds");
-        let rotated_frame = phase_vocoder_helpers::produce_output_frame(fft_frame, phase_frame);
-        let output_frame: Vec<f32> = apply_fft_to_frame(&rotated_frame, &ifft_engine)
-            // take the real part and normalise
-            .iter()
-            .map(|c| c.re / (rotated_frame.len() as f32))
-            .collect();
-        output_frames.extend_from_slice(&output_frame);
-    }
-    return output_frames;
+    ifft_frames
+        .par_chunks_mut(frame_size) // Split the contiguous buffer into chunks
+        .enumerate()
+        .for_each(|(i, ifft_frame)| {
+            let frame = fft_spectrum.frame(i).expect("frame index out of bounds");
+            let phase_frame = phases.frame(i).expect("frame index out of bounds");
+            let rotated_frame = phase_vocoder_helpers::produce_output_frame(frame, phase_frame);
+            let output_frame: Vec<f32> = apply_fft_to_frame(&rotated_frame, &ifft_engine)
+                // take the real part and normalise
+                .iter()
+                .map(|c| c.re / (rotated_frame.len() as f32))
+                .collect();
+
+            // Convert windowed frame to complex and copy into fft_frame
+            ifft_frame.copy_from_slice(&output_frame);
+        });
+    return FramedVec::new(ifft_frames, frame_size, frame_size);
 }
 
 // TODO I expect this function will need further optimising
