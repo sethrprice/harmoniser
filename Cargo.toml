@@ -9,3 +9,4 @@ hound = "3.5.1"
 itertools = "0.13.0"
 rustfft = "6.2.0"
 rust-interpolation = { git = "https://github.com/sethrprice/monointerp.git" }
+rayon = "1.10.0"
